@@ -51,6 +51,7 @@ public class Product : Aggregate<ProductId>
     public Size Size { get; private set; } = default!;
     public Stock Stock { get; set; } = default!;
     public Dimensions Dimensions { get; private set; } = default!;
+    public Discount Discount { get; private set; } = Discount.None;
     public IReadOnlyList<ProductImage> Images => _images.ToImmutableList();
 
     // EF
@@ -317,6 +318,19 @@ public class Product : Aggregate<ProductId>
 
         return Stock;
     }
+
+    public void ApplyDiscount(Discount discount)
+    {
+        discount.NotBeNull();
+        Discount = discount;
+    }
+
+    public void RemoveDiscount()
+    {
+        Discount = Discount.None;
+    }
+
+    public decimal DiscountedPrice => Discount.Apply(Price.Value);
 
     public bool HasStock(int quantity)
     {
