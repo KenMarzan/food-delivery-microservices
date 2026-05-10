@@ -22,5 +22,7 @@ public record ProductDto(
     int Width,
     int Depth,
     string? Description,
+    decimal DiscountPercentage,
+    decimal DiscountedPrice,
     IEnumerable<ProductImageDto>? Images
 );

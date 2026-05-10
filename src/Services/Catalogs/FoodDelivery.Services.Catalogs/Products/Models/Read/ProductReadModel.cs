@@ -21,5 +21,7 @@ public class ProductReadModel
     public required int Height { get; init; }
     public required int Width { get; init; }
     public required int Depth { get; init; }
+    public decimal DiscountPercentage { get; init; }
+    public decimal DiscountedPrice { get; init; }
     public IEnumerable<ProductImageReadModel>? Images { get; init; }
 }
