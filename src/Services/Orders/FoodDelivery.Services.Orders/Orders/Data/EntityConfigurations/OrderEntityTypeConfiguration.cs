@@ -20,5 +20,10 @@ public class OrderEntityTypeConfiguration : IEntityTypeConfiguration<Order>
         builder.OwnsOne(x => x.Customer);
 
         builder.OwnsOne(m => m.Product);
+
+        builder.Property(x => x.Status).HasConversion<string>().IsRequired();
+        builder.Property(x => x.ConfirmedAt).IsRequired(false);
+        builder.Property(x => x.CancelledAt).IsRequired(false);
+        builder.Property(x => x.CancellationReason).HasMaxLength(500).IsRequired(false);
     }
 }
