@@ -1,3 +1,4 @@
+# CI workflow: builds Docker image and emits GitHub Deployment events for Backtrack
 name: CI
 
 on:
