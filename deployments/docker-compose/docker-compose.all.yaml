@@ -1,0 +1,329 @@
+# Single consolidated Docker Compose file for food-delivery-microservices.
+# When opened in Docker Desktop the project name "food-delivery-microservices" groups
+# every container under one app entry, and the two named networks make it clear
+# which network belongs to this application.
+#
+# Run from this directory:
+#   docker compose -f docker-compose.all.yaml up -d
+#
+# Build images first (if needed):
+#   docker compose -f docker-compose.all.yaml build
+
+name: food-delivery-microservices
+
+services:
+
+  # ───────────────────────────────────────────────────────────────
+  #  APP (Backtrack discovery anchor)
+  # ───────────────────────────────────────────────────────────────
+  food-delivery-app:
+    image: zeritzuu/food-delivery-microservices:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: food-delivery-app
+    restart: unless-stopped
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  # ───────────────────────────────────────────────────────────────
+  #  INFRASTRUCTURE
+  # ───────────────────────────────────────────────────────────────
+
+  rabbitmq:
+    image: rabbitmq:management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    labels:
+      - "backtrack.exclude=true"
+    environment:
+      - RABBITMQ_PLUGINS_DIR=/opt/rabbitmq/plugins:/additional-plugins
+      - RABBITMQ_ENABLED_PLUGINS_FILE=/additional-plugins/rabbitmq_enabled_plugins
+    volumes:
+      - ./../configs/rabbitmq-plugins:/additional-plugins
+    ports:
+      - ${RABBITMQ_HOST_PORT:-5672}:${RABBITMQ_PORT:-5672}
+      - ${RABBITMQ_HOST_API_PORT:-15672}:${RABBITMQ_API_PORT:-15672}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - food-delivery-infrastructure
+
+  postgres:
+    image: postgres:17
+    container_name: postgres
+    restart: unless-stopped
+    labels:
+      - "backtrack.exclude=true"
+    ports:
+      - ${POSTGRES_HOST_PORT:-5432}:${POSTGRES_PORT:-5432}
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./../configs/init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - food-delivery-infrastructure
+
+  mongo:
+    image: mongo:latest
+    container_name: mongo
+    restart: unless-stopped
+    labels:
+      - "backtrack.exclude=true"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS:-admin}
+    ports:
+      - ${MONGO_HOST_PORT:-27017}:${MONGO_PORT:-27017}
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - food-delivery-infrastructure
+
+  redis:
+    image: redis/redis-stack:latest
+    container_name: redis
+    restart: unless-stopped
+    labels:
+      - "backtrack.exclude=true"
+    ports:
+      - ${REDIS_HOST_PORT:-6379}:6379
+      - ${REDIS_UI_HOST_PORT:-8001}:8001
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - food-delivery-infrastructure
+
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: unless-stopped
+    labels:
+      - "backtrack.exclude=true"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=food-delivery-services"
+      - "--entryPoints.web.address=:80"
+      - "--entryPoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  # ───────────────────────────────────────────────────────────────
+  #  MICROSERVICES
+  # ───────────────────────────────────────────────────────────────
+
+  gateway:
+    image: zeritzuu/gateway-service:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: src/ApiGateway/Dockerfile
+    container_name: gateway
+    restart: on-failure
+    ports:
+      - ${GATEWAY_HTTP_SVC_PORT:-3000}:80
+      - ${GATEWAY_HTTPS_SVC_PORT:-3001}:443
+    env_file:
+      - ./.env
+    environment:
+      - ASPNETCORE_ENVIRONMENT=docker
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=${DEV_CERT_PASSWORD:-food_delivery_dev_pass}
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/aspnetapp.pfx
+    volumes:
+      - ~/.aspnet/https:/https:ro
+    depends_on:
+      traefik:
+        condition: service_started
+      identity:
+        condition: service_started
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  catalogs:
+    image: zeritzuu/catalogs-service:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: src/Services/Catalogs/Dockerfile
+    container_name: catalogs
+    restart: on-failure
+    ports:
+      - ${CATALOGS_HTTP_SVC_PORT:-4000}:80
+      - ${CATALOGS_HTTPS_SVC_PORT:-4001}:443
+    env_file:
+      - ./.env
+      - ./.env.catalogs
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=${DEV_CERT_PASSWORD:-food_delivery_dev_pass}
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/aspnetapp.pfx
+      - OAuthOptions__Authority=http://identity:80
+      - OAuthOptions__ValidIssuers__0=http://identity:80
+    volumes:
+      - ~/.aspnet/https:/https:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  identity:
+    image: zeritzuu/identity-service:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: src/Services/Identity/Dockerfile
+    container_name: identity
+    restart: on-failure
+    ports:
+      - ${IDENTITY_HTTP_SVC_PORT:-7000}:80
+      - ${IDENTITY_HTTPS_SVC_PORT:-7001}:443
+    env_file:
+      - ./.env
+      - ./.env.identity
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=${DEV_CERT_PASSWORD:-food_delivery_dev_pass}
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/aspnetapp.pfx
+      - OAuthOptions__Authority=http://identity:80
+      - OAuthOptions__ValidIssuers__0=http://identity:80
+    volumes:
+      - ~/.aspnet/https:/https:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  customers:
+    image: zeritzuu/customers-service:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: src/Services/Customers/Dockerfile
+    container_name: customers
+    restart: on-failure
+    ports:
+      - ${CUSTOMERS_HTTP_SVC_PORT:-8000}:80
+      - ${CUSTOMERS_HTTPS_SVC_PORT:-8003}:443
+    env_file:
+      - ./.env
+      - ./.env.customers
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=${DEV_CERT_PASSWORD:-food_delivery_dev_pass}
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/aspnetapp.pfx
+      - OAuthOptions__Authority=http://identity:80
+      - OAuthOptions__ValidIssuers__0=http://identity:80
+    volumes:
+      - ~/.aspnet/https:/https:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+  orders:
+    image: zeritzuu/orders-service:${TAG:-latest}
+    build:
+      context: ../../
+      dockerfile: src/Services/Orders/Dockerfile
+    container_name: orders
+    restart: on-failure
+    ports:
+      - ${ORDERS_HTTP_SVC_PORT:-5000}:80
+      - ${ORDERS_HTTPS_SVC_PORT:-5001}:443
+    env_file:
+      - ./.env
+      - ./.env.orders
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ASPNETCORE_URLS=http://+:80;https://+:443
+      - ASPNETCORE_Kestrel__Certificates__Default__Password=${DEV_CERT_PASSWORD:-food_delivery_dev_pass}
+      - ASPNETCORE_Kestrel__Certificates__Default__Path=/https/aspnetapp.pfx
+      - OAuthOptions__Authority=http://identity:80
+      - OAuthOptions__ValidIssuers__0=http://identity:80
+    volumes:
+      - ~/.aspnet/https:/https:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - food-delivery-infrastructure
+      - food-delivery-services
+
+# ─────────────────────────────────────────────────────────────────
+#  NETWORKS
+# Two networks prefixed with the app name so Docker Desktop makes
+# it clear they belong to food-delivery-microservices.
+# ─────────────────────────────────────────────────────────────────
+networks:
+  food-delivery-infrastructure:
+    name: food-delivery-infrastructure
+    driver: bridge
+  food-delivery-services:
+    name: food-delivery-services
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────
+#  VOLUMES
+# ─────────────────────────────────────────────────────────────────
+volumes:
+  postgres-data:
+  mongo-data:
